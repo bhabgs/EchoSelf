@@ -1,0 +1,105 @@
+# EchoSelf GPU Server - Duix-Avatar Docker Compose
+#
+# 启动: docker-compose up -d
+# 停止: docker-compose down
+# 查看日志: docker-compose logs -f
+
+networks:
+  echoself_network:
+    driver: bridge
+
+services:
+  # TTS 语音合成服务 (Fish Speech)
+  duix-avatar-tts:
+    image: guiji2025/fish-speech-ziming
+    container_name: duix-avatar-tts
+    restart: always
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,video,display
+    ports:
+      - '18180:8080'
+    volumes:
+      - /data/duix_avatar_data/voice/data:/code/data
+    command: /bin/bash -c "/opt/conda/envs/python310/bin/python3 tools/api_server.py --listen 0.0.0.0:8080"
+    networks:
+      - echoself_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ASR 语音识别服务 (FunASR)
+  duix-avatar-asr:
+    image: guiji2025/fun-asr
+    container_name: duix-avatar-asr
+    restart: always
+    runtime: nvidia
+    privileged: true
+    working_dir: /workspace/FunASR/runtime
+    ports:
+      - '10095:10095'
+    command: sh /run.sh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - echoself_network
+
+  # 视频生成服务 (Duix Avatar)
+  duix-avatar-gen-video:
+    image: guiji2025/duix.avatar
+    container_name: duix-avatar-gen-video
+    restart: always
+    runtime: nvidia
+    privileged: true
+    volumes:
+      - /data/duix_avatar_data/face2face:/code/data
+    environment:
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    shm_size: '8g'
+    ports:
+      - '8383:8383'
+    command: python /code/app_local.py
+    networks:
+      - echoself_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8383/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # EchoSelf API 网关
+  echoself-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: echoself-api
+    restart: always
+    ports:
+      - '8000:8000'
+    volumes:
+      - ./temp:/app/temp
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+      - /data/duix_avatar_data:/data/duix_avatar_data
+    environment:
+      - DUIX_TTS_URL=http://duix-avatar-tts:8080
+      - DUIX_VIDEO_URL=http://duix-avatar-gen-video:8383
+      - DUIX_ASR_URL=http://duix-avatar-asr:10095
+    depends_on:
+      - duix-avatar-tts
+      - duix-avatar-gen-video
+    networks:
+      - echoself_network

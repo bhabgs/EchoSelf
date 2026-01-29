@@ -1,50 +1,47 @@
-# EchoSelf GPU Server 配置 (EchoMimic V3)
+# EchoSelf GPU Server 配置 (Duix-Avatar)
 
 server:
   host: "0.0.0.0"
   port: 8000
-  workers: 1
 
-# TTS 配置 (edge-tts，暂不使用 Fish Speech)
-tts:
-  device: "cuda:0"
-  sample_rate: 44100
-  default_voice: "zh-CN-XiaoxiaoNeural"
+# Duix-Avatar 服务地址
+duix:
+  # TTS 服务 (Fish Speech)
+  tts_url: "http://127.0.0.1:18180"
+  # 视频生成服务
+  video_url: "http://127.0.0.1:8383"
+  # ASR 服务 (可选)
+  asr_url: "http://127.0.0.1:10095"
 
-# Avatar 配置 (EchoMimic V3 flash-pro)
-avatar:
-  device: "cuda:1"
-  model_dir: "./models/echomimic_v3"
-  # Wan2.1 基础模型路径
-  base_model: "./models/echomimic_v3/Wan2.1-Fun-V1.1-1.3B-InP"
-  # 音频编码器
-  wav2vec_model: "./models/echomimic_v3/chinese-wav2vec2-base"
-  # transformer 权重
-  transformer_path: "./models/echomimic_v3/transformer/diffusion_pytorch_model.safetensors"
-
-  # 视频参数
-  width: 768
-  height: 768
-  fps: 25
-  max_frames: 81  # 约 3.2 秒，可调整
-
-  # 推理参数 (flash-pro 优化)
-  num_inference_steps: 8  # V3 flash-pro 只需 8 步
-  guidance_scale: 6.0     # 文本引导强度
-  audio_guidance_scale: 3.0  # 音频引导强度 (1.8-2 最佳唇同步)
-
-  # TeaCache 加速
-  enable_teacache: true
-  teacache_threshold: 0.1
-
-  # 精度
-  weight_dtype: "bfloat16"  # 4090 支持 bfloat16
-
-# 路径配置
+# 数据目录 (与 docker-compose 中的 volumes 对应)
 paths:
-  models_dir: "./models"
+  # 语音数据目录
+  voice_data: "/data/duix_avatar_data/voice/data"
+  # 视频数据目录
+  video_data: "/data/duix_avatar_data/face2face"
+  # 临时文件目录
   temp_dir: "./temp"
+  # 输出目录
   output_dir: "./outputs"
+
+# 视频生成参数
+video:
+  # 超分辨率 (0=关闭, 1=开启)
+  chaofen: 0
+  # 水印开关 (0=关闭, 1=开启)
+  watermark_switch: 0
+  # 并行数
+  pn: 1
+
+# TTS 参数
+tts:
+  format: "wav"
+  topP: 0.7
+  max_new_tokens: 1024
+  chunk_length: 100
+  repetition_penalty: 1.2
+  temperature: 0.7
+  streaming: false
 
 # 日志配置
 logging:

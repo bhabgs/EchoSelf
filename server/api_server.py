@@ -1,5 +1,12 @@
 """
-EchoSelf GPU Server - 提供 TTS 和 Avatar 生成 API (EchoMimic V3)
+EchoSelf GPU Server - API 网关 (基于 Duix-Avatar)
+
+Duix-Avatar 提供三个核心服务:
+- TTS (端口 18180): Fish Speech 语音合成/克隆
+- ASR (端口 10095): FunASR 语音识别
+- Video (端口 8383): 数字人视频生成
+
+本服务作为 API 网关，提供统一的接口。
 
 运行: python api_server.py
 文档: http://localhost:8000/docs
@@ -8,18 +15,18 @@ EchoSelf GPU Server - 提供 TTS 和 Avatar 生成 API (EchoMimic V3)
 import os
 import sys
 import uuid
-import math
-import tempfile
+import time
+import asyncio
+import shutil
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 
 import yaml
-import torch
-import numpy as np
-from PIL import Image
+import httpx
+import aiofiles
 from loguru import logger
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -33,8 +40,7 @@ logger.add("logs/server.log", rotation="100 MB", level="DEBUG")
 # 全局变量
 # ============================================================
 config = None
-avatar_service = None
-tts_service = None
+http_client = None
 
 
 # ============================================================
@@ -43,411 +49,346 @@ tts_service = None
 def load_config(config_path: str = "config.yaml") -> dict:
     """加载配置文件"""
     with open(config_path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+
+    # 支持环境变量覆盖
+    cfg['duix']['tts_url'] = os.getenv('DUIX_TTS_URL', cfg['duix']['tts_url'])
+    cfg['duix']['video_url'] = os.getenv('DUIX_VIDEO_URL', cfg['duix']['video_url'])
+    cfg['duix']['asr_url'] = os.getenv('DUIX_ASR_URL', cfg['duix']['asr_url'])
+
+    return cfg
 
 
 # ============================================================
-# EchoMimic V3 Avatar 生成服务
+# Duix-Avatar 客户端
 # ============================================================
-class AvatarServiceV3:
-    """EchoMimic V3 Avatar 生成服务 (flash-pro 版本)"""
+class DuixAvatarClient:
+    """Duix-Avatar API 客户端"""
 
     def __init__(self, config: dict):
-        self.config = config
-        self.device = config.get('device', 'cuda:0')
-        self.model_dir = Path(config.get('model_dir', './models/echomimic_v3'))
-        self.base_model = config.get('base_model', './models/echomimic_v3/Wan2.1-Fun-V1.1-1.3B-InP')
-        self.wav2vec_model = config.get('wav2vec_model', './models/echomimic_v3/chinese-wav2vec2-base')
-        self.transformer_path = config.get('transformer_path', './models/echomimic_v3/transformer/diffusion_pytorch_model.safetensors')
+        self.tts_url = config['duix']['tts_url']
+        self.video_url = config['duix']['video_url']
+        self.asr_url = config['duix']['asr_url']
+        self.tts_config = config.get('tts', {})
+        self.video_config = config.get('video', {})
+        self.paths = config['paths']
 
-        self.width = config.get('width', 768)
-        self.height = config.get('height', 768)
-        self.fps = config.get('fps', 25)
-        self.max_frames = config.get('max_frames', 81)
-        self.num_inference_steps = config.get('num_inference_steps', 8)
-        self.guidance_scale = config.get('guidance_scale', 6.0)
-        self.audio_guidance_scale = config.get('audio_guidance_scale', 3.0)
-        self.enable_teacache = config.get('enable_teacache', True)
-        self.teacache_threshold = config.get('teacache_threshold', 0.1)
-        self.weight_dtype_str = config.get('weight_dtype', 'bfloat16')
+        # 说话人信息缓存 (用于声音克隆)
+        self.speakers = {}
 
-        self.pipeline = None
-        self.audio_encoder = None
-        self.wav2vec_feature_extractor = None
-        self.vae = None
-        self.is_loaded = False
+    async def check_services(self) -> dict:
+        """检查各服务状态"""
+        status = {
+            "tts": False,
+            "video": False,
+            "asr": False
+        }
 
-    def load_model(self):
-        """加载 EchoMimic V3 模型"""
-        if self.is_loaded:
-            return True
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # 检查 TTS
+            try:
+                resp = await client.get(f"{self.tts_url}/health")
+                status["tts"] = resp.status_code == 200
+            except:
+                pass
 
-        logger.info(f"加载 EchoMimic V3 模型到 {self.device}...")
+            # 检查 Video
+            try:
+                resp = await client.get(f"{self.video_url}/health")
+                status["video"] = resp.status_code == 200
+            except:
+                pass
 
-        try:
-            # 添加源码路径
-            echomimic_src = Path("echomimic_v3_src")
-            if str(echomimic_src) not in sys.path:
-                sys.path.insert(0, str(echomimic_src))
+            # 检查 ASR
+            try:
+                resp = await client.get(f"{self.asr_url}/health")
+                status["asr"] = resp.status_code == 200
+            except:
+                pass
 
-            from omegaconf import OmegaConf
-            from diffusers import FlowMatchEulerDiscreteScheduler
-            from transformers import AutoTokenizer, Wav2Vec2FeatureExtractor
-            from einops import rearrange
-            import librosa
-            import pyloudnorm as pyln
+        return status
 
-            # 导入 V3 模块
-            from src.wan_vae import AutoencoderKLWan
-            from src.wan_image_encoder import CLIPModel
-            from src.wan_text_encoder import WanT5EncoderModel
-            from src.wan_transformer3d_audio_2512 import WanTransformerAudioMask3DModel as WanTransformer
-            from src.pipeline_wan_fun_inpaint_audio_2512 import WanFunInpaintAudioPipeline
-            from src.wav2vec2 import Wav2Vec2Model
-            from src.fm_solvers_unipc import FlowUniPCMultistepScheduler
-            from src.utils import filter_kwargs
-            from src.cache_utils import get_teacache_coefficients
-
-            # 设置精度
-            weight_dtype = torch.bfloat16 if self.weight_dtype_str == "bfloat16" else torch.float16
-
-            # 加载配置
-            config_path = "config/wan2.1/wan_civitai.yaml"
-            if not os.path.exists(config_path):
-                config_path = "echomimic_v3_src/config/wan2.1/wan_civitai.yaml"
-            model_config = OmegaConf.load(config_path)
-
-            logger.info("  [1/7] 加载音频编码器 (wav2vec2)...")
-            self.audio_encoder = Wav2Vec2Model.from_pretrained(
-                self.wav2vec_model, local_files_only=True
-            ).to('cpu')  # 音频处理在 CPU
-            self.audio_encoder.feature_extractor._freeze_parameters()
-            self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-                self.wav2vec_model, local_files_only=True
-            )
-
-            logger.info("  [2/7] 加载 Transformer...")
-            transformer = WanTransformer.from_pretrained(
-                os.path.join(self.base_model, model_config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
-                transformer_additional_kwargs=OmegaConf.to_container(model_config['transformer_additional_kwargs']),
-                low_cpu_mem_usage=True,
-                torch_dtype=weight_dtype,
-            )
-
-            # 加载 flash-pro 权重
-            logger.info("  [3/7] 加载 flash-pro 权重...")
-            from safetensors.torch import load_file
-            state_dict = load_file(self.transformer_path)
-            m, u = transformer.load_state_dict(state_dict, strict=False)
-            logger.info(f"    missing keys: {len(m)}, unexpected keys: {len(u)}")
-
-            logger.info("  [4/7] 加载 VAE...")
-            self.vae = AutoencoderKLWan.from_pretrained(
-                os.path.join(self.base_model, model_config['vae_kwargs'].get('vae_subpath', 'vae')),
-                additional_kwargs=OmegaConf.to_container(model_config['vae_kwargs']),
-            ).to(weight_dtype)
-
-            logger.info("  [5/7] 加载 Tokenizer 和 Text Encoder...")
-            tokenizer = AutoTokenizer.from_pretrained(
-                os.path.join(self.base_model, model_config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer')),
-            )
-            text_encoder = WanT5EncoderModel.from_pretrained(
-                os.path.join(self.base_model, model_config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
-                additional_kwargs=OmegaConf.to_container(model_config['text_encoder_kwargs']),
-                low_cpu_mem_usage=True,
-                torch_dtype=weight_dtype,
-            ).eval()
-
-            logger.info("  [6/7] 加载 CLIP Image Encoder...")
-            clip_image_encoder = CLIPModel.from_pretrained(
-                os.path.join(self.base_model, model_config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
-            ).to(weight_dtype).eval()
-
-            logger.info("  [7/7] 创建 Pipeline...")
-            # 使用 UniPC 调度器
-            scheduler_kwargs = OmegaConf.to_container(model_config['scheduler_kwargs'])
-            scheduler_kwargs['shift'] = 1
-            scheduler = FlowUniPCMultistepScheduler(
-                **filter_kwargs(FlowUniPCMultistepScheduler, scheduler_kwargs)
-            )
-
-            self.pipeline = WanFunInpaintAudioPipeline(
-                transformer=transformer,
-                vae=self.vae,
-                tokenizer=tokenizer,
-                text_encoder=text_encoder,
-                scheduler=scheduler,
-                clip_image_encoder=clip_image_encoder
-            )
-
-            self.pipeline.to(device=self.device)
-
-            # 启用 TeaCache 加速
-            if self.enable_teacache:
-                coefficients = get_teacache_coefficients("Wan2.1-Fun-V1.1-1.3B-InP")
-                if coefficients is not None:
-                    logger.info(f"  启用 TeaCache (threshold={self.teacache_threshold})")
-                    self.pipeline.transformer.enable_teacache(
-                        coefficients,
-                        self.num_inference_steps,
-                        self.teacache_threshold,
-                        num_skip_start_steps=5,
-                        offload=False
-                    )
-
-            self.weight_dtype = weight_dtype
-            self.is_loaded = True
-            logger.info("✓ EchoMimic V3 模型加载成功")
-            return True
-
-        except Exception as e:
-            logger.error(f"加载 EchoMimic V3 失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-    def _get_audio_embed(self, audio_path: str, video_length: int):
-        """提取音频特征"""
-        import librosa
-        import pyloudnorm as pyln
-        from einops import rearrange
-
-        # 加载音频
-        mel_input, sr = librosa.load(audio_path, sr=16000)
-
-        # 响度归一化
-        meter = pyln.Meter(sr)
-        loudness = meter.integrated_loudness(mel_input)
-        if abs(loudness) <= 100:
-            mel_input = pyln.normalize.loudness(mel_input, loudness, -23)
-
-        # 截取到视频长度
-        mel_input = mel_input[:int(video_length / self.fps * sr)]
-
-        # 提取特征
-        audio_feature = np.squeeze(
-            self.wav2vec_feature_extractor(mel_input, sampling_rate=sr).input_values
-        )
-        audio_feature = torch.from_numpy(audio_feature).float().to('cpu')
-        audio_feature = audio_feature.unsqueeze(0)
-
-        with torch.no_grad():
-            embeddings = self.audio_encoder(
-                audio_feature, seq_len=int(video_length), output_hidden_states=True
-            )
-
-        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
-        audio_emb = rearrange(audio_emb, "b s d -> s b d")
-
-        # 处理时间窗口
-        indices = (torch.arange(2 * 2 + 1) - 2) * 1
-        center_indices = torch.arange(0, video_length, 1).unsqueeze(1) + indices.unsqueeze(0)
-        center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0] - 1)
-        audio_embeds = audio_emb[center_indices]
-        audio_embeds = audio_embeds.unsqueeze(0).to(device=self.device, dtype=self.weight_dtype)
-
-        return audio_embeds
-
-    def _get_sample_size(self, pil_img):
-        """计算输出尺寸"""
-        w, h = pil_img.size
-        ori_a = w * h
-        default_a = self.width * self.height
-
-        if default_a < ori_a:
-            ratio_a = math.sqrt(ori_a / self.width / self.height)
-            w = w / ratio_a // 16 * 16
-            h = h / ratio_a // 16 * 16
-        else:
-            w = w // 16 * 16
-            h = h // 16 * 16
-
-        return [int(h), int(w)]
-
-    def generate(
+    async def register_speaker(
         self,
-        reference_image_path: str,
-        audio_path: str,
-        output_path: str,
-        prompt: str = "A person is speaking.",
-        max_frames: Optional[int] = None
-    ) -> Optional[str]:
+        speaker_id: str,
+        reference_audio_path: str,
+        reference_text: str
+    ) -> dict:
         """
-        生成 Avatar 视频
+        注册说话人 (用于声音克隆)
 
         Args:
-            reference_image_path: 参考图片路径
-            audio_path: 驱动音频路径
-            output_path: 输出视频路径
-            prompt: 文本提示
-            max_frames: 最大帧数
+            speaker_id: 说话人唯一标识
+            reference_audio_path: 参考音频路径
+            reference_text: 参考音频对应的文本
 
         Returns:
-            生成的视频路径，失败返回 None
+            注册结果
         """
-        if not self.is_loaded:
-            if not self.load_model():
-                return None
+        # 将音频复制到 Duix 数据目录
+        voice_data_dir = Path(self.paths['voice_data'])
+        voice_data_dir.mkdir(parents=True, exist_ok=True)
 
-        if max_frames is None:
-            max_frames = self.max_frames
+        target_audio = voice_data_dir / f"{speaker_id}.wav"
+        shutil.copy(reference_audio_path, target_audio)
+
+        # 保存说话人信息
+        self.speakers[speaker_id] = {
+            "reference_audio": str(target_audio),
+            "reference_text": reference_text,
+            "asr_format_audio_url": f"/code/data/{speaker_id}.wav"
+        }
+
+        logger.info(f"✓ 注册说话人: {speaker_id}")
+        return self.speakers[speaker_id]
+
+    async def synthesize_speech(
+        self,
+        text: str,
+        speaker_id: Optional[str] = None,
+        output_path: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        TTS 语音合成
+
+        Args:
+            text: 要合成的文本
+            speaker_id: 说话人 ID (用于声音克隆)
+            output_path: 输出路径
+
+        Returns:
+            生成的音频路径
+        """
+        if not text:
+            return None
+
+        if output_path is None:
+            output_path = f"temp/{uuid.uuid4()}.wav"
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # 构建请求参数
+        params = {
+            "speaker": speaker_id or str(uuid.uuid4()),
+            "text": text,
+            "format": self.tts_config.get("format", "wav"),
+            "topP": self.tts_config.get("topP", 0.7),
+            "max_new_tokens": self.tts_config.get("max_new_tokens", 1024),
+            "chunk_length": self.tts_config.get("chunk_length", 100),
+            "repetition_penalty": self.tts_config.get("repetition_penalty", 1.2),
+            "temperature": self.tts_config.get("temperature", 0.7),
+            "need_asr": False,
+            "streaming": False,
+            "is_fixed_seed": 0,
+            "is_norm": 0,
+        }
+
+        # 如果有说话人信息，添加参考音频
+        if speaker_id and speaker_id in self.speakers:
+            speaker_info = self.speakers[speaker_id]
+            params["reference_audio"] = speaker_info["asr_format_audio_url"]
+            params["reference_text"] = speaker_info["reference_text"]
+
+        logger.info(f"TTS 合成: {text[:30]}...")
 
         try:
-            from moviepy import VideoFileClip, AudioFileClip
-            from src.utils import get_image_to_video_latent2, save_videos_grid
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    f"{self.tts_url}/v1/invoke",
+                    json=params
+                )
 
-            logger.info(f"开始生成视频...")
-            logger.info(f"  参考图片: {reference_image_path}")
-            logger.info(f"  音频: {audio_path}")
+                if resp.status_code == 200:
+                    # 保存音频
+                    async with aiofiles.open(output_path, 'wb') as f:
+                        await f.write(resp.content)
 
-            # 加载参考图片
-            ref_image = Image.open(reference_image_path).convert("RGB")
-            ref_start = np.array(ref_image)
-
-            # 获取音频时长
-            audio_clip = AudioFileClip(audio_path)
-            video_length = min(int(audio_clip.duration * self.fps), max_frames)
-
-            # 对齐到 VAE 时间压缩比
-            temporal_ratio = self.vae.config.temporal_compression_ratio
-            video_length = int((video_length - 1) // temporal_ratio * temporal_ratio) + 1 if video_length != 1 else 1
-
-            logger.info(f"  视频长度: {video_length} 帧 ({video_length / self.fps:.1f} 秒)")
-
-            # 提取音频特征
-            logger.info("  提取音频特征...")
-            audio_embeds = self._get_audio_embed(audio_path, video_length)
-
-            # 准备输入
-            validation_image_start = Image.fromarray(ref_start).convert("RGB")
-            sample_size_0, sample_size_1 = self._get_sample_size(validation_image_start)
-
-            logger.info(f"  输出尺寸: {sample_size_1}x{sample_size_0}")
-
-            input_video, input_video_mask, clip_image = get_image_to_video_latent2(
-                validation_image_start, None,
-                video_length=video_length,
-                sample_size=[sample_size_0, sample_size_1]
-            )
-
-            # 生成
-            logger.info(f"  开始推理 ({self.num_inference_steps} 步)...")
-            generator = torch.Generator(device=self.device).manual_seed(42)
-
-            negative_prompt = "Gesture is bad. Gesture is unclear. Strange and twisted hands. Bad hands. Bad fingers."
-
-            with torch.no_grad():
-                sample = self.pipeline(
-                    prompt,
-                    num_frames=video_length,
-                    negative_prompt=negative_prompt,
-                    audio_embeds=audio_embeds,
-                    audio_scale=1.0,
-                    ip_mask=None,
-                    use_un_ip_mask=False,
-                    height=sample_size_0,
-                    width=sample_size_1,
-                    generator=generator,
-                    neg_scale=1.0,
-                    neg_steps=0,
-                    use_dynamic_cfg=False,
-                    use_dynamic_acfg=False,
-                    guidance_scale=self.guidance_scale,
-                    audio_guidance_scale=self.audio_guidance_scale,
-                    num_inference_steps=self.num_inference_steps,
-                    video=input_video,
-                    mask_video=input_video_mask,
-                    clip_image=clip_image,
-                    cfg_skip_ratio=0.0,
-                    shift=5.0,
-                ).videos
-
-            # 保存临时视频
-            tmp_video_path = output_path.replace('.mp4', '_tmp.mp4')
-            save_videos_grid(sample[:, :, :video_length], tmp_video_path, fps=self.fps)
-
-            # 添加音频
-            logger.info("  合并音频...")
-            video_clip = VideoFileClip(tmp_video_path)
-            audio_clip = audio_clip.subclipped(0, video_length / self.fps)
-            video_clip = video_clip.with_audio(audio_clip)
-            video_clip.write_videofile(
-                output_path,
-                codec="libx264",
-                audio_codec="aac",
-                threads=2,
-                logger=None
-            )
-
-            # 清理
-            os.remove(tmp_video_path)
-            video_clip.close()
-            audio_clip.close()
-
-            logger.info(f"✓ 视频生成完成: {output_path}")
-            return output_path
+                    logger.info(f"✓ TTS 合成完成: {output_path}")
+                    return output_path
+                else:
+                    logger.error(f"TTS 失败: {resp.status_code} - {resp.text}")
+                    return None
 
         except Exception as e:
-            logger.error(f"生成视频失败: {e}")
+            logger.error(f"TTS 请求异常: {e}")
+            return None
+
+    async def generate_video(
+        self,
+        audio_path: str,
+        video_path: str,
+        output_path: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        生成数字人视频
+
+        Args:
+            audio_path: 驱动音频路径
+            video_path: 参考视频/图片路径 (需要在 Duix 数据目录中)
+            output_path: 输出路径
+
+        Returns:
+            生成的视频路径
+        """
+        task_code = str(uuid.uuid4())
+
+        if output_path is None:
+            output_path = f"outputs/{task_code}.mp4"
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # 构建请求参数
+        params = {
+            "audio_url": audio_path,
+            "video_url": video_path,
+            "code": task_code,
+            "chaofen": self.video_config.get("chaofen", 0),
+            "watermark_switch": self.video_config.get("watermark_switch", 0),
+            "pn": self.video_config.get("pn", 1)
+        }
+
+        logger.info(f"开始生成视频 (task: {task_code})...")
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                # 提交任务
+                resp = await client.post(
+                    f"{self.video_url}/easy/submit",
+                    json=params
+                )
+
+                if resp.status_code != 200:
+                    logger.error(f"提交任务失败: {resp.status_code} - {resp.text}")
+                    return None
+
+                # 轮询查询进度
+                max_wait = 300  # 最大等待 5 分钟
+                start_time = time.time()
+
+                while time.time() - start_time < max_wait:
+                    await asyncio.sleep(2)  # 每 2 秒查询一次
+
+                    query_resp = await client.get(
+                        f"{self.video_url}/easy/query",
+                        params={"code": task_code}
+                    )
+
+                    if query_resp.status_code == 200:
+                        result = query_resp.json()
+
+                        # 检查任务状态
+                        status = result.get("status", "")
+                        progress = result.get("progress", 0)
+
+                        logger.info(f"  进度: {progress}% - {status}")
+
+                        if status == "completed" or progress >= 100:
+                            # 下载生成的视频
+                            video_url = result.get("video_url")
+                            if video_url:
+                                video_resp = await client.get(video_url)
+                                if video_resp.status_code == 200:
+                                    async with aiofiles.open(output_path, 'wb') as f:
+                                        await f.write(video_resp.content)
+
+                                    logger.info(f"✓ 视频生成完成: {output_path}")
+                                    return output_path
+
+                            # 如果没有 video_url，可能结果在本地
+                            local_output = result.get("output_path")
+                            if local_output and os.path.exists(local_output):
+                                shutil.copy(local_output, output_path)
+                                logger.info(f"✓ 视频生成完成: {output_path}")
+                                return output_path
+
+                            return None
+
+                        elif status == "failed":
+                            logger.error(f"视频生成失败: {result.get('error', 'Unknown error')}")
+                            return None
+
+                logger.error("视频生成超时")
+                return None
+
+        except Exception as e:
+            logger.error(f"视频生成异常: {e}")
             import traceback
             traceback.print_exc()
             return None
 
-
-# ============================================================
-# TTS 语音合成服务
-# ============================================================
-class TTSService:
-    """TTS 语音合成服务 (使用 edge-tts)"""
-
-    def __init__(self, config: dict):
-        self.config = config
-        self.default_voice = config.get('default_voice', 'zh-CN-XiaoxiaoNeural')
-        self.is_loaded = True  # edge-tts 无需加载模型
-
-    async def synthesize(
+    async def clone_voice(
         self,
-        text: str,
-        output_path: str,
-        voice: Optional[str] = None
-    ) -> Optional[str]:
+        speaker_id: str,
+        reference_audio_path: str
+    ) -> dict:
         """
-        合成语音
+        克隆声音
 
         Args:
-            text: 要合成的文本
-            output_path: 输出音频路径
-            voice: 声音名称
+            speaker_id: 说话人 ID
+            reference_audio_path: 参考音频路径
 
         Returns:
-            生成的音频路径，失败返回 None
+            克隆结果
+        """
+        # 先进行 ASR 识别参考音频的文本
+        reference_text = await self.transcribe(reference_audio_path)
+
+        if not reference_text:
+            reference_text = "这是一段参考音频。"  # 默认文本
+
+        # 注册说话人
+        return await self.register_speaker(
+            speaker_id=speaker_id,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text
+        )
+
+    async def transcribe(self, audio_path: str) -> Optional[str]:
+        """
+        语音识别 (ASR)
+
+        Args:
+            audio_path: 音频文件路径
+
+        Returns:
+            识别的文本
         """
         try:
-            import edge_tts
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                with open(audio_path, 'rb') as f:
+                    files = {"audio": f}
+                    resp = await client.post(
+                        f"{self.asr_url}/transcribe",
+                        files=files
+                    )
 
-            voice = voice or self.default_voice
-            logger.info(f"TTS 合成: {text[:30]}... (voice={voice})")
-
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(output_path)
-
-            logger.info(f"✓ TTS 合成完成: {output_path}")
-            return output_path
+                if resp.status_code == 200:
+                    result = resp.json()
+                    text = result.get("text", "")
+                    logger.info(f"✓ ASR 识别: {text[:50]}...")
+                    return text
+                else:
+                    logger.warning(f"ASR 失败: {resp.status_code}")
+                    return None
 
         except Exception as e:
-            logger.error(f"TTS 合成失败: {e}")
+            logger.warning(f"ASR 请求异常: {e}")
             return None
 
 
 # ============================================================
 # FastAPI 应用
 # ============================================================
+duix_client: Optional[DuixAvatarClient] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global config, avatar_service, tts_service
+    global config, duix_client
 
-    logger.info("正在启动 EchoSelf GPU Server (EchoMimic V3)...")
+    logger.info("正在启动 EchoSelf GPU Server (Duix-Avatar)...")
 
     config = load_config()
 
@@ -456,12 +397,14 @@ async def lifespan(app: FastAPI):
     Path(config['paths']['output_dir']).mkdir(parents=True, exist_ok=True)
     Path("logs").mkdir(parents=True, exist_ok=True)
 
-    # 初始化服务
-    avatar_service = AvatarServiceV3(config['avatar'])
-    tts_service = TTSService(config['tts'])
+    # 初始化 Duix 客户端
+    duix_client = DuixAvatarClient(config)
+
+    # 检查服务状态
+    status = await duix_client.check_services()
+    logger.info(f"Duix 服务状态: TTS={status['tts']}, Video={status['video']}, ASR={status['asr']}")
 
     logger.info("✓ EchoSelf GPU Server 启动完成")
-    logger.info("  模型将在首次请求时加载（预热）")
 
     yield
 
@@ -470,8 +413,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="EchoSelf GPU Server",
-    description="提供 TTS 语音合成和 Avatar 视频生成 API (基于 EchoMimic V3)",
-    version="2.0.0",
+    description="基于 Duix-Avatar 的数字人视频生成 API",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -488,43 +431,33 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     """健康检查"""
+    status = await duix_client.check_services()
     return {
-        "status": "ok",
-        "version": "2.0.0 (EchoMimic V3)",
-        "gpu_available": torch.cuda.is_available(),
-        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
-        "gpu_names": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else [],
-        "avatar_loaded": avatar_service.is_loaded if avatar_service else False,
-        "tts_loaded": tts_service.is_loaded if tts_service else False,
+        "status": "ok" if all(status.values()) else "degraded",
+        "version": "3.0.0 (Duix-Avatar)",
+        "services": status
     }
 
 
 @app.post("/tts")
 async def text_to_speech(
     text: str = Form(...),
-    voice: str = Form("zh-CN-XiaoxiaoNeural"),
+    speaker_id: Optional[str] = Form(None),
 ):
     """
-    TTS 语音合成
+    TTS 语音合成 (Fish Speech)
 
     - text: 要合成的文本
-    - voice: 声音名称 (edge-tts)
-
-    常用中文声音:
-    - zh-CN-XiaoxiaoNeural (女)
-    - zh-CN-YunxiNeural (男)
-    - zh-CN-YunjianNeural (男)
+    - speaker_id: 说话人 ID (可选，用于声音克隆)
     """
     request_id = str(uuid.uuid4())[:8]
-    temp_dir = Path(config['paths']['temp_dir']) / request_id
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    output_path = f"temp/{request_id}.wav"
 
     try:
-        output_path = str(temp_dir / "output.wav")
-        result = await tts_service.synthesize(
+        result = await duix_client.synthesize_speech(
             text=text,
-            output_path=output_path,
-            voice=voice
+            speaker_id=speaker_id,
+            output_path=output_path
         )
 
         if result and os.path.exists(result):
@@ -544,22 +477,15 @@ async def text_to_speech(
 @app.post("/avatar")
 async def generate_avatar(
     audio: UploadFile = File(...),
-    reference_image: UploadFile = File(...),
-    prompt: str = Form("A person is speaking."),
-    max_frames: int = Form(81)
+    reference_video: UploadFile = File(...),
 ):
     """
-    Avatar 视频生成 (EchoMimic V3)
+    Avatar 视频生成
 
     - audio: 驱动音频文件
-    - reference_image: 参考人像图片
-    - prompt: 文本提示 (可选)
-    - max_frames: 最大帧数（默认 81，约 3.2 秒）
+    - reference_video: 参考视频/图片文件
 
-    V3 优势:
-    - 8 步推理，比 V2 快 4 倍
-    - 无需 pose 数据
-    - 12GB 显存即可运行
+    注意: 参考视频需要先通过 /train 接口训练模型
     """
     request_id = str(uuid.uuid4())[:8]
     temp_dir = Path(config['paths']['temp_dir']) / request_id
@@ -568,22 +494,30 @@ async def generate_avatar(
     try:
         # 保存上传的文件
         audio_path = str(temp_dir / "audio.wav")
-        image_path = str(temp_dir / "reference.png")
+        video_path = str(temp_dir / "reference.mp4")
 
-        with open(audio_path, "wb") as f:
-            f.write(await audio.read())
+        async with aiofiles.open(audio_path, 'wb') as f:
+            await f.write(await audio.read())
 
-        with open(image_path, "wb") as f:
-            f.write(await reference_image.read())
+        async with aiofiles.open(video_path, 'wb') as f:
+            await f.write(await reference_video.read())
+
+        # 复制到 Duix 数据目录
+        duix_data_dir = Path(config['paths']['video_data'])
+        duix_data_dir.mkdir(parents=True, exist_ok=True)
+
+        duix_audio = duix_data_dir / f"{request_id}_audio.wav"
+        duix_video = duix_data_dir / f"{request_id}_video.mp4"
+
+        shutil.copy(audio_path, duix_audio)
+        shutil.copy(video_path, duix_video)
 
         # 生成视频
-        output_path = str(temp_dir / "output.mp4")
-        result = avatar_service.generate(
-            reference_image_path=image_path,
-            audio_path=audio_path,
-            output_path=output_path,
-            prompt=prompt,
-            max_frames=max_frames
+        output_path = f"outputs/{request_id}.mp4"
+        result = await duix_client.generate_video(
+            audio_path=str(duix_audio),
+            video_path=str(duix_video),
+            output_path=output_path
         )
 
         if result and os.path.exists(result):
@@ -593,7 +527,7 @@ async def generate_avatar(
                 filename="avatar_output.mp4"
             )
         else:
-            raise HTTPException(status_code=500, detail="Avatar 生成失败")
+            raise HTTPException(status_code=500, detail="视频生成失败")
 
     except Exception as e:
         logger.error(f"Avatar 请求失败: {e}")
@@ -602,43 +536,113 @@ async def generate_avatar(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/warmup")
-async def warmup():
+@app.post("/clone-voice")
+async def clone_voice(
+    speaker_id: str = Form(...),
+    reference_audio: UploadFile = File(...),
+):
     """
-    预热模型（首次调用前建议先预热）
-    """
-    logger.info("开始预热模型...")
+    声音克隆
 
-    if not avatar_service.is_loaded:
-        success = avatar_service.load_model()
-        if success:
-            return {"status": "ok", "message": "模型预热完成"}
+    - speaker_id: 说话人唯一标识
+    - reference_audio: 参考音频文件 (建议 5-30 秒)
+    """
+    temp_path = f"temp/{speaker_id}_reference.wav"
+
+    try:
+        # 保存参考音频
+        async with aiofiles.open(temp_path, 'wb') as f:
+            await f.write(await reference_audio.read())
+
+        # 克隆声音
+        result = await duix_client.clone_voice(
+            speaker_id=speaker_id,
+            reference_audio_path=temp_path
+        )
+
+        return {
+            "status": "ok",
+            "speaker_id": speaker_id,
+            "message": "声音克隆成功，可在 /tts 接口中使用此 speaker_id"
+        }
+
+    except Exception as e:
+        logger.error(f"声音克隆失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/asr")
+async def speech_to_text(
+    audio: UploadFile = File(...),
+):
+    """
+    语音识别 (ASR)
+
+    - audio: 音频文件
+    """
+    temp_path = f"temp/{uuid.uuid4()}.wav"
+
+    try:
+        # 保存音频
+        async with aiofiles.open(temp_path, 'wb') as f:
+            await f.write(await audio.read())
+
+        # 识别
+        text = await duix_client.transcribe(temp_path)
+
+        if text:
+            return {"status": "ok", "text": text}
         else:
-            raise HTTPException(status_code=500, detail="模型加载失败")
-    else:
-        return {"status": "ok", "message": "模型已加载"}
+            raise HTTPException(status_code=500, detail="语音识别失败")
+
+    except Exception as e:
+        logger.error(f"ASR 请求失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.get("/info")
 async def get_info():
     """获取服务信息"""
+    status = await duix_client.check_services()
     return {
         "name": "EchoSelf GPU Server",
-        "version": "2.0.0",
-        "avatar_model": "EchoMimic V3 flash-pro",
-        "tts_engine": "edge-tts",
-        "features": {
-            "inference_steps": config['avatar']['num_inference_steps'],
-            "max_resolution": f"{config['avatar']['width']}x{config['avatar']['height']}",
-            "fps": config['avatar']['fps'],
-            "teacache": config['avatar']['enable_teacache'],
+        "version": "3.0.0",
+        "backend": "Duix-Avatar",
+        "services": {
+            "tts": {
+                "name": "Fish Speech",
+                "url": config['duix']['tts_url'],
+                "available": status['tts']
+            },
+            "video": {
+                "name": "Duix Avatar",
+                "url": config['duix']['video_url'],
+                "available": status['video']
+            },
+            "asr": {
+                "name": "FunASR",
+                "url": config['duix']['asr_url'],
+                "available": status['asr']
+            }
         },
-        "advantages": [
-            "8 步推理（比 V2 快 4 倍）",
-            "无需 pose 数据",
-            "无需 face mask",
-            "12GB 显存即可运行",
+        "features": [
+            "TTS 语音合成",
+            "声音克隆",
+            "数字人视频生成",
+            "语音识别 (ASR)"
         ]
+    }
+
+
+@app.get("/speakers")
+async def list_speakers():
+    """列出已注册的说话人"""
+    return {
+        "speakers": list(duix_client.speakers.keys())
     }
 
 
