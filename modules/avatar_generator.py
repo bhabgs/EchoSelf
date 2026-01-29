@@ -507,7 +507,8 @@ class AvatarGenerator:
 
         try:
             import librosa
-            from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+            # moviepy 2.x 导入方式
+            from moviepy import ImageClip, AudioFileClip
 
             # 获取参考图片
             ref_data = self.reference_images[avatar_id]
@@ -525,30 +526,11 @@ class AvatarGenerator:
             # 创建图片视频
             img_clip = ImageClip(img_array, duration=audio_duration)
 
-            # 添加简单的动画效果（轻微缩放，模拟呼吸）
-            def breathing_effect(get_frame, t):
-                frame = get_frame(t)
-                scale = 1.0 + 0.005 * np.sin(2 * np.pi * 0.5 * t)  # 轻微呼吸效果
-                h, w = frame.shape[:2]
-                new_h, new_w = int(h * scale), int(w * scale)
-
-                # 缩放
-                resized = cv2.resize(frame, (new_w, new_h))
-
-                # 裁剪到原始大小
-                start_x = (new_w - w) // 2
-                start_y = (new_h - h) // 2
-                cropped = resized[start_y:start_y+h, start_x:start_x+w]
-
-                return cropped
-
-            img_clip = img_clip.fl(breathing_effect)
-
             # 加载音频
             audio_clip = AudioFileClip(str(audio_path))
 
             # 合并
-            final_clip = img_clip.set_audio(audio_clip)
+            final_clip = img_clip.with_audio(audio_clip)
 
             # 写入文件
             final_clip.write_videofile(
@@ -637,14 +619,15 @@ class AvatarGenerator:
             audio_path: 音频文件路径
             output_path: 输出视频路径
         """
-        from moviepy.editor import ImageSequenceClip, AudioFileClip
+        # moviepy 2.x 导入方式
+        from moviepy import ImageSequenceClip, AudioFileClip
 
         # 创建视频
         clip = ImageSequenceClip(frames, fps=self.video_fps)
 
-        # 添加音频
+        # 添加音频 (moviepy 2.x 使用 with_audio)
         audio = AudioFileClip(str(audio_path))
-        clip = clip.set_audio(audio)
+        clip = clip.with_audio(audio)
 
         # 写入
         clip.write_videofile(

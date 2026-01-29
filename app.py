@@ -290,7 +290,7 @@ def chat_with_avatar(
 
     Args:
         user_message: 用户消息
-        chat_history: Gradio 聊天历史格式
+        chat_history: Gradio 聊天历史格式 (Gradio 6.0+ messages 格式)
 
     Returns:
         Tuple[List, str, Optional[str]]: (更新的聊天历史, 清空的输入框, 视频路径)
@@ -300,20 +300,38 @@ def chat_with_avatar(
 
     if not app_state.is_initialized:
         chat_history = chat_history or []
-        chat_history.append((user_message, "系统未初始化，请先完成初始化"))
+        chat_history.append({"role": "user", "content": user_message})
+        chat_history.append({"role": "assistant", "content": "系统未初始化，请先完成初始化"})
         return chat_history, "", None
 
     try:
         # 1. 获取 LLM 回复
         progress(0.2, desc="正在思考...")
 
-        # 构建消息历史
+        # 构建消息历史 (Gradio 6.0 已经是 messages 格式)
         messages = []
         if chat_history:
-            for user_msg, assistant_msg in chat_history:
-                messages.append({"role": "user", "content": user_msg})
-                if assistant_msg:
-                    messages.append({"role": "assistant", "content": assistant_msg})
+            for msg in chat_history:
+                if isinstance(msg, dict):
+                    content = msg.get("content", "")
+                    # Gradio 5+ 的 multimodal content 可能是 list，需要转换为 string
+                    if isinstance(content, list):
+                        # 提取文本部分，忽略图片等多媒体内容
+                        text_parts = []
+                        for item in content:
+                            if isinstance(item, str):
+                                text_parts.append(item)
+                            elif isinstance(item, dict) and item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                            elif isinstance(item, tuple) and len(item) >= 2 and item[0] == "text":
+                                text_parts.append(str(item[1]))
+                        content = " ".join(text_parts)
+                    messages.append({"role": msg.get("role", "user"), "content": content})
+                elif isinstance(msg, tuple):
+                    # 兼容旧格式
+                    messages.append({"role": "user", "content": msg[0]})
+                    if msg[1]:
+                        messages.append({"role": "assistant", "content": msg[1]})
 
         messages.append({"role": "user", "content": user_message})
 
@@ -353,9 +371,10 @@ def chat_with_avatar(
 
         progress(1.0, desc="完成")
 
-        # 更新聊天历史
+        # 更新聊天历史 (Gradio 6.0 messages 格式)
         chat_history = chat_history or []
-        chat_history.append((user_message, reply))
+        chat_history.append({"role": "user", "content": user_message})
+        chat_history.append({"role": "assistant", "content": reply})
 
         # 保存到内部历史
         app_state.chat_history.append({"role": "user", "content": user_message})
@@ -366,7 +385,8 @@ def chat_with_avatar(
     except Exception as e:
         logger.error(f"聊天时发生错误: {e}")
         chat_history = chat_history or []
-        chat_history.append((user_message, f"抱歉，发生了错误: {str(e)}"))
+        chat_history.append({"role": "user", "content": user_message})
+        chat_history.append({"role": "assistant", "content": f"抱歉，发生了错误: {str(e)}"})
         return chat_history, "", None
 
 
