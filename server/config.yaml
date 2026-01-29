@@ -1,29 +1,44 @@
-# EchoSelf GPU Server 配置
+# EchoSelf GPU Server 配置 (EchoMimic V3)
 
 server:
   host: "0.0.0.0"
   port: 8000
   workers: 1
 
-# TTS 配置 (Fish Speech)
+# TTS 配置 (edge-tts，暂不使用 Fish Speech)
 tts:
   device: "cuda:0"
-  model_dir: "./models/fish-speech-1.5"
   sample_rate: 44100
-  # 默认使用的参考音频（如果客户端没有提供）
-  default_reference: null
+  default_voice: "zh-CN-XiaoxiaoNeural"
 
-# Avatar 配置 (EchoMimic V2)
+# Avatar 配置 (EchoMimic V3 flash-pro)
 avatar:
   device: "cuda:1"
-  model_dir: "./models/echomimic_v2"
+  model_dir: "./models/echomimic_v3"
+  # Wan2.1 基础模型路径
+  base_model: "./models/echomimic_v3/Wan2.1-Fun-V1.1-1.3B-InP"
+  # 音频编码器
+  wav2vec_model: "./models/echomimic_v3/chinese-wav2vec2-base"
+  # transformer 权重
+  transformer_path: "./models/echomimic_v3/transformer/diffusion_pytorch_model.safetensors"
+
+  # 视频参数
   width: 768
   height: 768
-  fps: 24
-  steps: 30  # 推理步数，越多质量越好但更慢
-  cfg_scale: 2.5
-  # 默认姿态数据目录
-  default_pose_dir: "./models/echomimic_v2/assets/halfbody_demo/pose/01"
+  fps: 25
+  max_frames: 81  # 约 3.2 秒，可调整
+
+  # 推理参数 (flash-pro 优化)
+  num_inference_steps: 8  # V3 flash-pro 只需 8 步
+  guidance_scale: 6.0     # 文本引导强度
+  audio_guidance_scale: 3.0  # 音频引导强度 (1.8-2 最佳唇同步)
+
+  # TeaCache 加速
+  enable_teacache: true
+  teacache_threshold: 0.1
+
+  # 精度
+  weight_dtype: "bfloat16"  # 4090 支持 bfloat16
 
 # 路径配置
 paths:

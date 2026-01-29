@@ -1,15 +1,28 @@
-# EchoSelf GPU Server 部署指南
+# EchoSelf GPU Server 部署指南 (EchoMimic V3)
 
 远程 GPU 服务器部署，提供 TTS 语音合成和 Avatar 视频生成 API。
 
+**使用 EchoMimic V3 flash-pro 版本，相比 V2 有显著提升。**
+
+## V3 vs V2 对比
+
+| 特性 | V2 | V3 flash-pro |
+|------|-----|--------------|
+| 推理步数 | 30 步 | **8 步** |
+| 显存需求 | ~16GB | **12GB** |
+| 需要 Pose 数据 | ✅ | **❌** |
+| 需要 Face Mask | ✅ | **❌** |
+| 模型参数 | 较大 | **1.3B** |
+| 速度 | 约 7 分钟/120帧 | **约 50 秒/120帧** |
+
 ## 服务器要求
 
-- **GPU**: 2x RTX 4090 (或同等算力，>=24GB 显存)
-- **CUDA**: >= 11.7
+- **GPU**: RTX 4090 (24GB) 或同等算力，12GB 显存即可
+- **CUDA**: >= 12.1
 - **Python**: 3.10
-- **系统**: Ubuntu 22.04 (推荐) 或 CentOS 7+
+- **系统**: Ubuntu 22.04 (推荐)
 - **内存**: >= 32GB
-- **硬盘**: >= 100GB (模型文件约 50GB)
+- **硬盘**: >= 50GB (模型文件)
 
 ## 快速部署
 
@@ -30,12 +43,18 @@ cd /home/user/echoself-server
 ### 3. 运行安装脚本
 
 ```bash
-# 给脚本添加执行权限
 chmod +x setup.sh start.sh
-
-# 运行安装（会安装依赖和下载模型，约需 30-60 分钟）
 bash setup.sh
 ```
+
+安装内容：
+- Python 3.10 环境
+- PyTorch 2.5.1 (CUDA 12.1)
+- EchoMimic V3 源码
+- 模型文件：
+  - Wan2.1-Fun-V1.1-1.3B-InP (基础模型)
+  - chinese-wav2vec2-base (音频编码器)
+  - flash-pro transformer 权重
 
 ### 4. 启动服务
 
@@ -43,59 +62,9 @@ bash setup.sh
 bash start.sh
 ```
 
-服务启动后，访问：
+服务启动后：
 - API 地址: `http://192.168.50.218:8000`
 - 文档地址: `http://192.168.50.218:8000/docs`
-
-## 手动安装（如果自动安装失败）
-
-### 创建 Python 环境
-
-```bash
-conda create -n echoself-server python=3.10 -y
-conda activate echoself-server
-```
-
-### 安装 PyTorch
-
-```bash
-pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-```
-
-### 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-### 下载 FFmpeg
-
-```bash
-wget https://www.johnvansickle.com/ffmpeg/old-releases/ffmpeg-4.4-amd64-static.tar.xz
-tar xf ffmpeg-4.4-amd64-static.tar.xz
-export FFMPEG_PATH=$(pwd)/ffmpeg-4.4-amd64-static
-```
-
-### 下载模型
-
-```bash
-mkdir -p models
-
-# 下载 EchoMimic V2 模型（约 30GB）
-pip install huggingface_hub
-huggingface-cli download BadToBest/EchoMimicV2 --local-dir models/echomimic_v2
-
-# 克隆 EchoMimic V2 源码
-git clone https://github.com/antgroup/echomimic_v2 echomimic_v2_src
-```
-
-### 启动
-
-```bash
-export FFMPEG_PATH=$(pwd)/ffmpeg-4.4-amd64-static
-export PYTHONPATH=$(pwd)/echomimic_v2_src:$PYTHONPATH
-python api_server.py
-```
 
 ## API 接口
 
@@ -103,6 +72,12 @@ python api_server.py
 
 ```bash
 curl http://192.168.50.218:8000/health
+```
+
+### 预热模型（首次使用前建议调用）
+
+```bash
+curl -X POST http://192.168.50.218:8000/warmup
 ```
 
 ### TTS 语音合成
@@ -114,14 +89,32 @@ curl -X POST http://192.168.50.218:8000/tts \
   -o output.wav
 ```
 
+常用声音：
+- `zh-CN-XiaoxiaoNeural` (女)
+- `zh-CN-YunxiNeural` (男)
+- `zh-CN-YunjianNeural` (男)
+
 ### Avatar 视频生成
 
 ```bash
 curl -X POST http://192.168.50.218:8000/avatar \
   -F "audio=@audio.wav" \
   -F "reference_image=@photo.jpg" \
-  -F "max_frames=240" \
+  -F "prompt=A person is speaking." \
+  -F "max_frames=81" \
   -o output.mp4
+```
+
+参数说明：
+- `audio`: 驱动音频文件
+- `reference_image`: 参考人像图片
+- `prompt`: 文本提示（可选）
+- `max_frames`: 最大帧数（默认 81，约 3.2 秒）
+
+### 获取服务信息
+
+```bash
+curl http://192.168.50.218:8000/info
 ```
 
 ## 配置说明
@@ -129,67 +122,69 @@ curl -X POST http://192.168.50.218:8000/avatar \
 编辑 `config.yaml`:
 
 ```yaml
-server:
-  host: "0.0.0.0"
-  port: 8000
-
-tts:
-  device: "cuda:0"  # TTS 使用第一张 GPU
-
 avatar:
-  device: "cuda:1"  # Avatar 使用第二张 GPU
-  width: 768
-  height: 768
-  fps: 24
-  steps: 30  # 推理步数，越多质量越好但越慢
+  device: "cuda:0"  # GPU 设备
+  num_inference_steps: 8  # 推理步数
+  guidance_scale: 6.0     # 文本引导强度
+  audio_guidance_scale: 3.0  # 音频引导强度 (1.8-2 最佳唇同步)
+  enable_teacache: true   # TeaCache 加速
+  max_frames: 81          # 最大帧数
 ```
 
-## 后台运行
+**调优建议**：
+- `audio_guidance_scale`: 1.8-2.0 获得最佳唇同步，降低可提升画质
+- `guidance_scale`: 3-6 控制 prompt 跟随程度
+- `num_inference_steps`: 8 步已足够，增加可略微提升质量
 
-使用 screen 或 tmux 保持服务在后台运行：
+## 后台运行
 
 ```bash
 # 使用 screen
 screen -S echoself
 bash start.sh
-# Ctrl+A+D 退出 screen
+# Ctrl+A+D 退出
 
 # 重新进入
 screen -r echoself
 ```
 
-或使用 systemd 服务：
-
-```bash
-# 创建 /etc/systemd/system/echoself-gpu.service
-sudo systemctl enable echoself-gpu
-sudo systemctl start echoself-gpu
-```
-
 ## 故障排除
 
-### 1. CUDA 内存不足
+### 1. 模型加载失败
 
-- 减少 `max_frames` 参数
-- 在 `config.yaml` 中启用 int8 量化
+检查模型文件是否完整：
+```bash
+ls -la models/echomimic_v3/
+# 应该有：
+# - Wan2.1-Fun-V1.1-1.3B-InP/
+# - chinese-wav2vec2-base/
+# - transformer/diffusion_pytorch_model.safetensors
+```
 
-### 2. 模型加载失败
+### 2. CUDA 版本不匹配
 
-- 检查模型文件是否完整下载
-- 确认 CUDA 版本兼容
+确保 CUDA >= 12.1：
+```bash
+nvidia-smi
+nvcc --version
+```
 
-### 3. FFmpeg 错误
+### 3. 显存不足
 
-- 确保 FFMPEG_PATH 环境变量正确设置
-- 确认 ffmpeg 有执行权限
+- 减少 `max_frames`
+- 使用较小的图片分辨率
 
-## GPU 分配说明
+## 模型文件结构
 
-两张 4090 的推荐分配：
-
-| GPU | 显存使用 | 用途 |
-|-----|---------|------|
-| cuda:0 | ~8GB | TTS (Fish Speech / edge-tts) |
-| cuda:1 | ~16GB | Avatar (EchoMimic V2) |
-
-总显存 48GB 完全够用，还有余量。
+```
+models/echomimic_v3/
+├── Wan2.1-Fun-V1.1-1.3B-InP/   # 基础模型 (~10GB)
+│   ├── transformer/
+│   ├── vae/
+│   ├── tokenizer/
+│   ├── text_encoder/
+│   └── image_encoder/
+├── chinese-wav2vec2-base/       # 音频编码器 (~400MB)
+└── transformer/
+    └── diffusion_pytorch_model.safetensors  # flash-pro 权重 (~5GB)
+```
