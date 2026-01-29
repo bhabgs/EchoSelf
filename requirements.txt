@@ -1,0 +1,118 @@
+# ============================================================
+# EchoSelf - 数字分身系统依赖
+# Digital Avatar Chat System Dependencies
+# ============================================================
+
+# 核心框架
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+
+# Gradio 前端
+gradio>=4.44.0
+gradio-client>=1.3.0
+
+# HTTP 请求 (用于 Ollama API)
+requests>=2.31.0
+httpx>=0.27.0
+
+# 音频处理
+librosa>=0.10.1
+soundfile>=0.12.1
+scipy>=1.11.0
+pydub>=0.25.1
+ffmpeg-python>=0.2.0
+
+# 视频处理
+opencv-python>=4.8.0
+imageio>=2.33.0
+imageio-ffmpeg>=0.4.9
+moviepy>=1.0.3
+
+# 图像处理
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Transformers & AI
+transformers>=4.36.0
+accelerate>=0.25.0
+diffusers>=0.25.0
+safetensors>=0.4.0
+einops>=0.7.0
+omegaconf>=2.3.0
+
+# RAG 相关
+chromadb>=0.4.22
+sentence-transformers>=2.2.2
+langchain>=0.1.0
+langchain-community>=0.0.20
+
+# Fish Speech TTS (如果使用 pip 安装)
+# fish-speech>=1.5.0  # 可能需要从源码安装
+
+# 备选 TTS 引擎
+edge-tts>=6.1.9
+gTTS>=2.5.0
+
+# 文本处理
+jieba>=0.42.1
+chardet>=5.2.0
+
+# 工具库
+tqdm>=4.66.0
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+loguru>=0.7.2
+
+# 数据验证
+pydantic>=2.5.0
+
+# 异步支持
+aiohttp>=3.9.0
+aiofiles>=23.2.1
+
+# 可选：模型下载工具
+huggingface-hub>=0.20.0
+modelscope>=1.11.0  # 中国区模型下载加速
+
+# ============================================================
+# 系统依赖（非 pip，需要系统安装）
+# ============================================================
+# - FFmpeg: 用于视频/音频处理
+#   macOS: brew install ffmpeg
+#   Ubuntu: sudo apt install ffmpeg
+#   Windows: choco install ffmpeg
+#
+# - CUDA Toolkit: 用于 GPU 加速
+#   需要与 PyTorch 版本匹配的 CUDA 版本
+# ============================================================
+
+# ============================================================
+# EchoMimic V2 依赖 (需要从源码安装)
+# ============================================================
+# git clone https://github.com/antgroup/echomimic_v2.git
+# cd echomimic_v2
+# pip install -e .
+#
+# 或者手动安装其依赖：
+facenet-pytorch>=2.5.3
+mediapipe>=0.10.8
+onnxruntime>=1.16.0  # macOS/CPU 用 onnxruntime，Linux GPU 用 onnxruntime-gpu
+
+# ============================================================
+# Fish Speech V1.5 依赖 (需要从源码安装)
+# ============================================================
+# git clone https://github.com/fishaudio/fish-speech.git
+# cd fish-speech
+# pip install -e .
+#
+# 模型下载：
+# huggingface-cli download fishaudio/fish-speech-1.5 --local-dir models/fish-speech-1.5
+
+# ============================================================
+# 开发依赖（可选）
+# ============================================================
+# pytest>=7.4.0
+# black>=23.12.0
+# isort>=5.13.0
+# mypy>=1.8.0

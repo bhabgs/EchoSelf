@@ -1,0 +1,48 @@
+Matplotlib is building the font cache; this may take a moment.
+13:09:31 | INFO     | __main__ - 初始化 LLM 客户端...
+13:09:31 | INFO     | modules.llm_client - OllamaClient 初始化 - 服务器: http://192.168.50.218:11434, 模型: qwen2.5:7b-instruct
+13:09:31 | INFO     | modules.llm_client - 连接成功！可用模型: ['qwen3:30b', 'qllama/bce-reranker-base_v1:latest', 'bge-m3:latest', 'mxbai-embed-large:335m', 'qwen3:latest', 'gpt-oss:latest', 'deepseek-r1:latest']
+13:09:31 | WARNING  | modules.llm_client - 目标模型 'qwen2.5:7b-instruct' 未在服务器上找到
+13:09:31 | WARNING  | modules.llm_client - 可用模型: ['qwen3:30b', 'qllama/bce-reranker-base_v1:latest', 'bge-m3:latest', 'mxbai-embed-large:335m', 'qwen3:latest', 'gpt-oss:latest', 'deepseek-r1:latest']
+13:09:31 | INFO     | __main__ - 初始化声音克隆器...
+13:09:31 | INFO     | modules.voice_cloning - VoiceCloner 初始化 - 设备: mps
+13:09:31 | INFO     | modules.voice_cloning - 正在加载 TTS 模型...
+13:09:31 | WARNING  | modules.voice_cloning - Fish Speech 未安装，尝试使用备选方案...
+13:09:32 | INFO     | modules.voice_cloning - 使用 edge-tts 作为备选 TTS 引擎
+13:09:32 | INFO     | __main__ - 初始化 Avatar 生成器...
+13:09:32 | INFO     | modules.avatar_generator - AvatarGenerator 初始化 - 设备: mps, 分辨率: 512x512
+13:09:32 | INFO     | modules.avatar_generator - 正在加载 Avatar 生成模型...
+13:09:32 | WARNING  | modules.avatar_generator - EchoMimic V2 未安装，尝试下载...
+13:09:32 | INFO     | modules.avatar_generator - 正在设置 EchoMimic V2...
+13:09:32 | INFO     | modules.avatar_generator - 克隆 EchoMimic V2 仓库...
+13:09:50 | INFO     | modules.avatar_generator - 下载模型权重（这可能需要较长时间）...
+13:09:50 | INFO     | modules.avatar_generator - 请手动下载模型权重:
+13:09:50 | INFO     | modules.avatar_generator -   方式1: 从 HuggingFace 下载
+13:09:50 | INFO     | modules.avatar_generator -     huggingface-cli download antgroup/echomimic_v2 --local-dir models/echomimic_v2
+13:09:50 | INFO     | modules.avatar_generator -   方式2: 从 ModelScope 下载（中国区推荐）
+13:09:50 | INFO     | modules.avatar_generator -     modelscope download antgroup/echomimic_v2 --local_dir models/echomimic_v2
+/Volumes/codes/project/EchoSelf/venv/lib/python3.13/site-packages/huggingface_hub/utils/_validators.py:202: UserWarning: The `local_dir_use_symlinks` argument is deprecated and ignored in `snapshot_download`. Downloading to a local directory does not use symlinks anymore.
+  warnings.warn(
+13:10:05 | WARNING  | modules.avatar_generator - 自动下载失败: An error happened while trying to locate the files on the Hub and we cannot find the appropriate snapshot folder for the specified revision on the local disk. Please check your internet connection and try again.
+13:10:05 | WARNING  | modules.avatar_generator - 请手动下载模型
+13:10:05 | WARNING  | modules.avatar_generator - EchoMimic V2 安装失败，将使用备选方案
+13:10:05 | INFO     | modules.personality_extractor - PersonalityExtractor 初始化完成
+13:10:05 | INFO     | __main__ - 初始化 RAG 引擎...
+13:10:05 | INFO     | modules.rag_engine - RAGEngine 初始化 - 持久化目录: /Volumes/codes/project/EchoSelf/data/chroma_db
+13:10:05 | INFO     | modules.rag_engine - 正在初始化 RAG 引擎...
+13:10:29 | INFO     | modules.rag_engine - 加载嵌入模型: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+'[Errno 54] Connection reset by peer' thrown while requesting HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/./modules.json
+Retrying in 1s [Retry 1/5].
+No sentence-transformers model found with name sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2. Creating a new one with mean pooling.
+'[Errno 54] Connection reset by peer' thrown while requesting HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/adapter_config.json
+Retrying in 1s [Retry 1/5].
+13:11:21 | ERROR    | modules.rag_engine - 加载嵌入模型失败: Cannot send a request, as the client has been closed.
+13:14:58 | INFO     | modules.llm_client - 连接成功！可用模型: ['qwen3:30b', 'qllama/bce-reranker-base_v1:latest', 'bge-m3:latest', 'mxbai-embed-large:335m', 'qwen3:latest', 'gpt-oss:latest', 'deepseek-r1:latest']
+13:14:58 | WARNING  | modules.llm_client - 目标模型 'qwen2.5:7b-instruct' 未在服务器上找到
+13:14:58 | WARNING  | modules.llm_client - 可用模型: ['qwen3:30b', 'qllama/bce-reranker-base_v1:latest', 'bge-m3:latest', 'mxbai-embed-large:335m', 'qwen3:latest', 'gpt-oss:latest', 'deepseek-r1:latest']
+13:14:58 | ERROR    | modules.llm_client - 请求失败，状态码: 404
+13:14:58 | ERROR    | modules.llm_client - 响应内容: {"error":"model 'qwen2.5:7b-instruct' not found"}
+13:14:58 | ERROR    | modules.llm_client - 请求失败，状态码: 404
+13:14:58 | ERROR    | modules.llm_client - 响应内容: {"error":"model 'qwen2.5:7b-instruct' not found"}
+13:14:58 | ERROR    | modules.llm_client - 请求失败，状态码: 404
+13:14:58 | ERROR    | modules.llm_client - 响应内容: {"error":"model 'qwen2.5:7b-instruct' not found"}
