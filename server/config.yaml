@@ -1,0 +1,37 @@
+# EchoSelf GPU Server 配置
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+
+# TTS 配置 (Fish Speech)
+tts:
+  device: "cuda:0"
+  model_dir: "./models/fish-speech-1.5"
+  sample_rate: 44100
+  # 默认使用的参考音频（如果客户端没有提供）
+  default_reference: null
+
+# Avatar 配置 (EchoMimic V2)
+avatar:
+  device: "cuda:1"
+  model_dir: "./models/echomimic_v2"
+  width: 768
+  height: 768
+  fps: 24
+  steps: 30  # 推理步数，越多质量越好但更慢
+  cfg_scale: 2.5
+  # 默认姿态数据目录
+  default_pose_dir: "./models/echomimic_v2/assets/halfbody_demo/pose/01"
+
+# 路径配置
+paths:
+  models_dir: "./models"
+  temp_dir: "./temp"
+  output_dir: "./outputs"
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "./logs/server.log"

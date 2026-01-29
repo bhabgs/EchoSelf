@@ -30,7 +30,8 @@ from config import (
     OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_TIMEOUT,
     UPLOADS_DIR, OUTPUTS_DIR, DATA_DIR,
     SYSTEM_PROMPT_TEMPLATE, DEFAULT_PERSONALITY, DEFAULT_STYLE_EXAMPLES,
-    RAG_ENABLED, DEVICE, GRADIO_SERVER_PORT, GRADIO_SERVER_NAME
+    RAG_ENABLED, DEVICE, GRADIO_SERVER_PORT, GRADIO_SERVER_NAME,
+    USE_REMOTE_GPU, REMOTE_GPU_SERVER, REMOTE_GPU_TIMEOUT
 )
 
 # 导入模块
@@ -39,6 +40,7 @@ from modules.voice_cloning import VoiceCloner
 from modules.avatar_generator import AvatarGenerator
 from modules.personality_extractor import PersonalityExtractor
 from modules.rag_engine import RAGEngine
+from modules.remote_client import RemoteGPUClient
 
 from utils.file_utils import ensure_dir, save_uploaded_file, validate_file_type
 from utils.audio_utils import get_audio_duration, get_audio_info
@@ -61,10 +63,15 @@ class EchoSelfState:
         self.avatar_generator: Optional[AvatarGenerator] = None
         self.personality_extractor: Optional[PersonalityExtractor] = None
         self.rag_engine: Optional[RAGEngine] = None
+        self.remote_client: Optional[RemoteGPUClient] = None  # 远程 GPU 服务客户端
 
         self.system_prompt: str = ""
         self.is_initialized: bool = False
         self.user_id: str = "default"
+        self.use_remote_gpu: bool = USE_REMOTE_GPU  # 是否使用远程 GPU 服务
+
+        # 参考图片路径（用于远程 Avatar 生成）
+        self.reference_image_path: Optional[str] = None
 
         # 聊天历史
         self.chat_history: List[Dict[str, str]] = []
@@ -83,38 +90,53 @@ class EchoSelfState:
             )
 
             if self.llm_client.check_connection():
-                messages.append("LLM 客户端连接成功")
+                messages.append("✓ LLM 客户端连接成功")
             else:
-                messages.append("警告: LLM 连接失败，请检查 Ollama 服务器")
+                messages.append("⚠ LLM 连接失败，请检查 Ollama 服务器")
 
-            # 2. 初始化声音克隆器
-            logger.info("初始化声音克隆器...")
-            self.voice_cloner = VoiceCloner(device=DEVICE)
-            if self.voice_cloner.load_model():
-                messages.append("TTS 模型加载成功")
-            else:
-                messages.append("警告: TTS 模型加载失败，将使用备选方案")
+            # 2. 初始化远程 GPU 客户端或本地模块
+            if self.use_remote_gpu:
+                logger.info("初始化远程 GPU 服务客户端...")
+                self.remote_client = RemoteGPUClient(
+                    server_url=REMOTE_GPU_SERVER,
+                    timeout=REMOTE_GPU_TIMEOUT
+                )
 
-            # 3. 初始化 Avatar 生成器
-            logger.info("初始化 Avatar 生成器...")
-            self.avatar_generator = AvatarGenerator(device=DEVICE)
-            if self.avatar_generator.load_model():
-                messages.append("Avatar 模型加载成功")
-            else:
-                messages.append("警告: Avatar 模型加载失败，将使用备选方案")
+                if self.remote_client.check_connection():
+                    messages.append(f"✓ 远程 GPU 服务连接成功 ({REMOTE_GPU_SERVER})")
+                else:
+                    messages.append("⚠ 远程 GPU 服务连接失败，回退到本地模式")
+                    self.use_remote_gpu = False
 
-            # 4. 初始化性格提取器
+            if not self.use_remote_gpu:
+                # 本地模式：初始化声音克隆器
+                logger.info("初始化声音克隆器（本地）...")
+                self.voice_cloner = VoiceCloner(device=DEVICE)
+                if self.voice_cloner.load_model():
+                    messages.append("✓ TTS 模型加载成功（本地）")
+                else:
+                    messages.append("⚠ TTS 模型加载失败，将使用备选方案")
+
+                # 本地模式：初始化 Avatar 生成器
+                logger.info("初始化 Avatar 生成器（本地）...")
+                self.avatar_generator = AvatarGenerator(device=DEVICE)
+                if self.avatar_generator.load_model():
+                    messages.append("✓ Avatar 模型加载成功（本地）")
+                else:
+                    messages.append("⚠ Avatar 模型加载失败，将使用备选方案")
+
+            # 3. 初始化性格提取器
             self.personality_extractor = PersonalityExtractor()
-            messages.append("性格提取器就绪")
+            messages.append("✓ 性格提取器就绪")
 
-            # 5. 初始化 RAG 引擎（可选）
+            # 4. 初始化 RAG 引擎（可选）
             if RAG_ENABLED:
                 logger.info("初始化 RAG 引擎...")
                 self.rag_engine = RAGEngine(persist_directory=DATA_DIR / "chroma_db")
                 if self.rag_engine.initialize():
-                    messages.append("RAG 引擎初始化成功")
+                    messages.append("✓ RAG 引擎初始化成功")
                 else:
-                    messages.append("警告: RAG 引擎初始化失败")
+                    messages.append("⚠ RAG 引擎初始化失败")
 
             self.is_initialized = True
             return True, "\n".join(messages)
@@ -189,10 +211,16 @@ def process_uploaded_materials(
                 filename=f"{app_state.user_id}_avatar.jpg"
             )
 
-            if app_state.avatar_generator.set_reference_image(saved_photo, app_state.user_id):
-                messages.append(f"参考照片已设置")
+            # 保存参考图片路径（用于远程 Avatar 生成）
+            app_state.reference_image_path = str(saved_photo)
+
+            if app_state.use_remote_gpu:
+                # 远程模式：只保存路径
+                messages.append("✓ 参考照片已保存（将通过远程服务生成视频）")
+            elif app_state.avatar_generator and app_state.avatar_generator.set_reference_image(saved_photo, app_state.user_id):
+                messages.append("✓ 参考照片已设置")
             else:
-                messages.append("警告: 照片处理失败")
+                messages.append("⚠ 照片处理失败")
         else:
             messages.append("未上传照片，将使用默认形象")
 
@@ -208,25 +236,27 @@ def process_uploaded_materials(
                 try:
                     duration = get_audio_duration(sample_path)
                     if duration < 5:
-                        messages.append(f"警告: 语音样本 {i+1} 时长不足5秒")
+                        messages.append(f"⚠ 语音样本 {i+1} 时长不足5秒")
                         continue
                 except Exception as e:
-                    messages.append(f"警告: 无法读取语音样本 {i+1}")
+                    messages.append(f"⚠ 无法读取语音样本 {i+1}")
                     continue
 
-                # 保存并提取特征
+                # 保存语音样本
                 saved_sample, _ = save_uploaded_file(
                     sample_path,
                     UPLOADS_DIR / "voice_samples",
                     filename=f"{app_state.user_id}_voice_{i}.wav"
                 )
 
-                app_state.voice_cloner.extract_speaker_embedding(
-                    saved_sample,
-                    speaker_id=app_state.user_id
-                )
+                # 本地模式：提取说话人特征
+                if not app_state.use_remote_gpu and app_state.voice_cloner:
+                    app_state.voice_cloner.extract_speaker_embedding(
+                        saved_sample,
+                        speaker_id=app_state.user_id
+                    )
 
-            messages.append(f"已处理 {len(voice_samples)} 个语音样本")
+            messages.append(f"✓ 已处理 {len(voice_samples)} 个语音样本")
         else:
             messages.append("未上传语音样本，将使用默认声音")
 
@@ -351,23 +381,43 @@ def chat_with_avatar(
         progress(0.4, desc="生成语音...")
 
         # 2. TTS 合成语音
-        audio_path = app_state.voice_cloner.synthesize(
-            reply,
-            speaker_id=app_state.user_id,
-            output_path=OUTPUTS_DIR / f"reply_{int(time.time())}.wav"
-        )
+        audio_path = None
+        if app_state.use_remote_gpu and app_state.remote_client:
+            # 远程模式：调用远程 TTS 服务
+            import asyncio
+            audio_path = app_state.remote_client.synthesize_speech(
+                text=reply,
+                output_path=str(OUTPUTS_DIR / f"reply_{int(time.time())}.wav")
+            )
+        elif app_state.voice_cloner:
+            # 本地模式
+            audio_path = app_state.voice_cloner.synthesize(
+                reply,
+                speaker_id=app_state.user_id,
+                output_path=OUTPUTS_DIR / f"reply_{int(time.time())}.wav"
+            )
 
         # 3. 生成数字人视频
         video_path = None
         if audio_path:
             progress(0.6, desc="生成视频...")
 
-            if app_state.user_id in app_state.avatar_generator.list_avatars():
-                video_path = app_state.avatar_generator.generate_video(
-                    audio_path,
-                    avatar_id=app_state.user_id,
-                    output_path=OUTPUTS_DIR / f"video_{int(time.time())}.mp4"
-                )
+            if app_state.use_remote_gpu and app_state.remote_client:
+                # 远程模式：调用远程 Avatar 服务
+                if app_state.reference_image_path:
+                    video_path = app_state.remote_client.generate_avatar(
+                        audio_path=audio_path,
+                        reference_image_path=app_state.reference_image_path,
+                        output_path=str(OUTPUTS_DIR / f"video_{int(time.time())}.mp4")
+                    )
+            elif app_state.avatar_generator:
+                # 本地模式
+                if app_state.user_id in app_state.avatar_generator.list_avatars():
+                    video_path = app_state.avatar_generator.generate_video(
+                        audio_path,
+                        avatar_id=app_state.user_id,
+                        output_path=OUTPUTS_DIR / f"video_{int(time.time())}.mp4"
+                    )
 
         progress(1.0, desc="完成")
 
@@ -419,15 +469,25 @@ def test_llm_connection() -> str:
 
 def test_tts(text: str) -> Optional[str]:
     """测试 TTS"""
-    if not app_state.voice_cloner:
-        return None
+    test_text = text or "这是一段测试语音"
 
-    audio_path = app_state.voice_cloner.synthesize(
-        text or "这是一段测试语音",
-        speaker_id=app_state.user_id,
-        output_path=OUTPUTS_DIR / "test_tts.wav"
-    )
-    return audio_path
+    if app_state.use_remote_gpu and app_state.remote_client:
+        # 远程模式
+        audio_path = app_state.remote_client.synthesize_speech(
+            text=test_text,
+            output_path=str(OUTPUTS_DIR / "test_tts.wav")
+        )
+        return audio_path
+    elif app_state.voice_cloner:
+        # 本地模式
+        audio_path = app_state.voice_cloner.synthesize(
+            test_text,
+            speaker_id=app_state.user_id,
+            output_path=OUTPUTS_DIR / "test_tts.wav"
+        )
+        return audio_path
+
+    return None
 
 
 def export_chat_history() -> Optional[str]:

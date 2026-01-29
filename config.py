@@ -30,6 +30,14 @@ OLLAMA_TIMEOUT = 120  # 请求超时时间（秒）
 OLLAMA_MAX_TOKENS = 2048  # 最大生成token数
 
 # ============================================================
+# 远程 GPU 服务配置 (TTS + Avatar)
+# ============================================================
+# 启用远程 GPU 服务（推荐，解决本地算力不足问题）
+USE_REMOTE_GPU = os.getenv("USE_REMOTE_GPU", "true").lower() == "true"
+REMOTE_GPU_SERVER = os.getenv("REMOTE_GPU_SERVER", "http://192.168.50.218:8000")
+REMOTE_GPU_TIMEOUT = 300  # 远程请求超时时间（秒），视频生成需要较长时间
+
+# ============================================================
 # TTS 声音克隆配置 (Fish Speech V1.5)
 # ============================================================
 # Fish Speech 模型路径 (需要手动下载)
@@ -153,9 +161,12 @@ def print_config():
     print("EchoSelf 数字分身系统 - 配置信息")
     print("=" * 60)
     print(f"项目根目录: {PROJECT_ROOT}")
-    print(f"设备: {DEVICE}")
+    print(f"本地设备: {DEVICE}")
     print(f"Ollama 服务器: {OLLAMA_HOST}")
     print(f"Ollama 模型: {OLLAMA_MODEL}")
+    print(f"远程 GPU 服务: {'启用' if USE_REMOTE_GPU else '禁用'}")
+    if USE_REMOTE_GPU:
+        print(f"远程 GPU 地址: {REMOTE_GPU_SERVER}")
     print(f"RAG 启用: {RAG_ENABLED}")
     print("=" * 60)
 

@@ -1,0 +1,39 @@
+# 用户上传文件
+uploads/
+
+# 生成的输出文件
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+
+# 日志
+*.log
+logs/
+
+# 模型文件（太大不上传）
+models/echomimic_v2/*.pth
+models/echomimic_v2/sd-*
+models/echomimic_v2/audio_processor/
+models/fish-speech-1.5/
+
+# 数据库
+data/chroma_db/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# 临时文件
+temp/
+*.tmp
