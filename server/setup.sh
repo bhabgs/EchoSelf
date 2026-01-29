@@ -21,14 +21,14 @@ if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/
     exit 1
 fi
 
-# 检查 NVIDIA Docker
-if ! docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null; then
+# 检查 NVIDIA Docker Runtime
+if ! docker info 2>/dev/null | grep -q "nvidia"; then
     echo "错误: NVIDIA Container Toolkit 未正确安装"
     echo "请参考: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
     exit 1
 fi
 
-echo "✓ Docker 环境检查通过"
+echo "✓ Docker 环境检查通过 (nvidia runtime 可用)"
 
 # 检查 GPU
 echo ""
