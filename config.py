@@ -30,9 +30,10 @@ OLLAMA_TIMEOUT = 120  # 请求超时时间（秒）
 OLLAMA_MAX_TOKENS = 2048  # 最大生成token数
 
 # ============================================================
-# 远程 GPU 服务配置 (TTS + Avatar)
+# 远程 GPU 服务配置 (Duix-Avatar)
 # ============================================================
 # 启用远程 GPU 服务（推荐，解决本地算力不足问题）
+# 服务包含: TTS (Fish Speech), Video (Duix Avatar), ASR (FunASR)
 USE_REMOTE_GPU = os.getenv("USE_REMOTE_GPU", "true").lower() == "true"
 REMOTE_GPU_SERVER = os.getenv("REMOTE_GPU_SERVER", "http://192.168.50.218:8000")
 REMOTE_GPU_TIMEOUT = 300  # 远程请求超时时间（秒），视频生成需要较长时间
@@ -54,7 +55,7 @@ VOICE_CLONE_MIN_DURATION = 5  # 最小参考音频时长（秒）
 VOICE_CLONE_MAX_DURATION = 60  # 最大参考音频时长（秒）
 
 # ============================================================
-# 数字人/Avatar 配置 (EchoMimic V2)
+# 数字人/Avatar 配置 (Duix-Avatar 或本地备用)
 # ============================================================
 ECHOMIMIC_MODEL_DIR = MODELS_DIR / "echomimic_v2"
 ECHOMIMIC_PRETRAINED_DIR = ECHOMIMIC_MODEL_DIR / "pretrained_weights"
