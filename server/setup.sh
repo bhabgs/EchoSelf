@@ -30,10 +30,16 @@ fi
 
 echo "✓ Docker 环境检查通过 (nvidia runtime 可用)"
 
-# 检查 GPU
+# 检查 GPU (仅显示信息，不阻止安装)
 echo ""
-echo "检测到 GPU:"
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+echo "检测 GPU:"
+if nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null; then
+    echo "✓ GPU 检测成功"
+else
+    echo "⚠ 警告: nvidia-smi 执行失败"
+    echo "  可能原因: 驱动版本不匹配，建议重启服务器"
+    echo "  继续安装，但启动服务前请确保驱动正常"
+fi
 
 # 创建数据目录
 echo ""
